@@ -1,4 +1,4 @@
-""FastAPI Backend Server for INDIAN QUANTX (NSE Cash MIS)."""
+# FastAPI Backend Server for INDIAN QUANTX (NSE Cash MIS)
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -25,7 +25,7 @@ broker = create_broker(cfg)
 notifier = TelegramNotifier(cfg)
 manager = TradeManager(cfg, broker, notifier)
 
-app = FastAPI(title="INDIAN QUANTX — NSE MIS Algo API", version="1.0.0")
+app = FastAPI(title="INDIAN QUANTX - NSE MIS Algo API", version="1.0.0")
 
 
 class TickPayload(BaseModel):
@@ -35,6 +35,16 @@ class TickPayload(BaseModel):
 
 class KillPayload(BaseModel):
     reason: str = "MANUAL KILL SWITCH"
+
+
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "INDIAN QUANTX - NSE MIS Algo API",
+        "status": "live",
+        "broker": cfg.broker,
+        "ist_time": datetime.now(IST).strftime("%H:%M:%S IST"),
+    }
 
 
 @app.get("/health")
@@ -54,7 +64,7 @@ def status() -> dict:
 
 @app.post("/scan/paper")
 def scan_paper_universe() -> dict:
-    """Run a synthetic paper-mode SMC scan across top liquid NSE names."""
+    # Run a synthetic paper-mode SMC scan across top liquid NSE names
     samples = [
         ("RELIANCE", 2940.0, "LONG", 0.64, 1840.0, 11),
         ("ICICIBANK", 1286.0, "LONG", 0.62, 1620.0, 22),
