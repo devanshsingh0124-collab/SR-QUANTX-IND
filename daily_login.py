@@ -1,4 +1,4 @@
-""08:55 AM IST Daily 2FA/TOTP Login & Readiness Check Cron Script."""
+"""08:55 AM IST Daily 2FA/TOTP Login & Readiness Check Cron Script."""
 from __future__ import annotations
 
 from dotenv import load_dotenv

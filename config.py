@@ -1,4 +1,4 @@
-  """Central configuration for INDIAN QUANTX (NSE Cash MIS Algorithmic Engine)."""
+"""Central configuration for INDIAN QUANTX (NSE Cash MIS Algorithmic Engine)."""
 from __future__ import annotations
 
 import os
