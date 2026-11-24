@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+streamlit==1.41.1
+pandas==2.2.3
+numpy==2.1.3
+python-dotenv==1.0.1
+requests==2.32.3
+pyotp==2.9.0
+
+# Optional Live Broker SDKs (uncomment the one you use on your Mumbai Static-IP VPS):
+# smartapi-python>=1.4.8
+# dhanhq>=2.0.2
