@@ -1,5 +1,3 @@
-class DhanHQBrokerAdapter(BrokerAdapter):
-    """DhanHQ v2 adapter (Free Trading API, ₹499/mo 20-Level Depth, Static IP)."""
 """SEBI-2026-Compliant Broker Adapters (Paper, Angel One SmartAPI, DhanHQ v2)."""
 from __future__ import annotations
 
@@ -118,7 +116,12 @@ class AngelOneBrokerAdapter(BrokerAdapter):
             "quantity": str(qty),
         }
         order_id = self._client.placeOrder(payload)
-        return OrderReceipt(str
+        return OrderReceipt(str(order_id), symbol.upper(), side.upper(), qty, limit_px, limit_px, "FILLED", "Submitted to Angel One")
+
+
+class DhanHQBrokerAdapter(BrokerAdapter):
+    """DhanHQ v2 adapter (Free Trading API, ₹499/mo 20-Level Depth, Static IP)."""
+
     def __init__(self, cfg: QuantXConfig) -> None:
         super().__init__(cfg)
         self._client = None
