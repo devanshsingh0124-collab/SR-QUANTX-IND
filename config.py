@@ -42,7 +42,7 @@ BLOCKED_ASM_GSM: FrozenSet[str] = frozenset({
 class QuantXConfig:
     # Broker & mode: "paper" | "angel" | "dhan"
     broker: str = os.getenv("QUANTX_BROKER", "paper").strip().lower()
-    capital: float = _env_float("QUANTX_CAPITAL", 100000.0)
+    capital: float = _env_float("QUANTX_CAPITAL", 10000.0)
     db_path: str = os.getenv("QUANTX_DB_PATH", "quantx_state.db")
 
     # SEBI 2026 & NSE MIS execution controls
@@ -58,14 +58,14 @@ class QuantXConfig:
     hard_exit_ist: str = "15:12"
 
     # Risk & Profit-Lock parameters
-    risk_pct: float = _env_float("QUANTX_RISK_PCT", 0.010)           # 1.0% standard
-    a_plus_risk_pct: float = _env_float("QUANTX_APLUS_RISK_PCT", 0.015)  # 1.5% A+
+    risk_pct: float = _env_float("QUANTX_RISK_PCT", 0.015)           # 1.0% standard
+    a_plus_risk_pct: float = _env_float("QUANTX_APLUS_RISK_PCT", 0.020)  # 1.5% A+
     profit_lock_trigger_pct: float = 0.025  # +2.5% realized daily profit
     profit_lock_risk_mult: float = 0.50     # Halve risk in Profit-Lock mode
     profit_lock_min_score: int = 95         # Only A+ >= 95 setups in Profit-Lock
-    max_daily_loss_pct: float = 0.025       # -2.5% daily circuit breaker
-    max_open_trades: int = _env_int("QUANTX_MAX_OPEN_TRADES", 3)
-    max_daily_trades: int = _env_int("QUANTX_MAX_DAILY_TRADES", 10)
+    max_daily_loss_pct: float = 0.030       # -2.5% daily circuit breaker
+    max_open_trades: int = _env_int("QUANTX_MAX_OPEN_TRADES", 2)
+    max_daily_trades: int = _env_int("QUANTX_MAX_DAILY_TRADES", 4)
 
     # Institutional liquidity gate
     min_turnover_cr: float = 500.0
