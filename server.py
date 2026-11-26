@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 import os
-import random
 import threading
 import time
 from typing import Dict, List, Optional
@@ -20,7 +19,7 @@ import requests
 from broker_adapter import create_broker
 from config import QuantXConfig, load_config
 from smc_engine import evaluate_signal
-from market_data import MarketSnapshot, generate_synthetic_ohlcv, resample_timeframe
+from market_data import MarketSnapshot, resample_timeframe
 from telegram_bot import TelegramNotifier
 from trade_manager import TradeManager
 
@@ -29,14 +28,7 @@ load_dotenv()
 IST = timezone(timedelta(hours=5, minutes=30))
 
 base_cfg = load_config()
-cfg = QuantXConfig(
-    broker=base_cfg.broker,
-    capital=base_cfg.capital,
-    db_path=base_cfg.db_path,
-    max_daily_trades=20,
-    telegram_bot_token=base_cfg.telegram_bot_token,
-    telegram_chat_id=base_cfg.telegram_chat_id,
-)
+cfg = base_cfg
 broker = create_broker(cfg)
 notifier = TelegramNotifier(cfg)
 manager = TradeManager(cfg, broker, notifier)
@@ -48,7 +40,7 @@ CANDLE_CACHE: Dict[str, tuple[float, pd.DataFrame]] = {}
 
 ENGINE_STATE = {
     "running": True,
-    "paper_24x7": os.getenv("PAPER_24X7", "true").lower() == "true",
+    "paper_24x7": False,
     "last_scan_ist": "Starting...",
     "last_feed_source": "Yahoo NSE Live",
     "scan_cycles": 0,
@@ -104,30 +96,34 @@ def run_autonomous_cycle() -> None:
     ENGINE_STATE["scan_cycles"] += 1
     ENGINE_STATE["last_scan_ist"] = now_ist.strftime("%H:%M:%S IST")
 
+    # Reset daily halt at 09:15 IST market open
     if in_hours and now_ist.strftime("%H:%M") == "09:15" and manager.halted:
         manager.halted = False
         manager.halt_reason = ""
         manager.daily_trades_count = 0
 
-    if not in_hours and not ENGINE_STATE["paper_24x7"]:
-        ENGINE_STATE["last_feed_source"] = "NSE Closed (09:15-15:30 IST)"
+    # STRICT: Never trade or generate fake signals when NSE is closed
+    if not in_hours:
+        ENGINE_STATE["last_feed_source"] = "NSE CLOSED (09:15-15:30 IST)"
+        if manager.open_positions:
+            manager.kill_switch("NSE MARKET CLOSED AUTO-EXIT", now_ist=now_ist)
         return
 
-    # 1. Update open positions smoothly
-    for sym in list(manager.open_positions.keys()):
-        pos = manager.open_positions[sym]
-        if in_hours:
-            df_live = fetch_yahoo_nse_5m(sym)
-            next_ltp = float(df_live.iloc[-1]["close"]) if df_live is not None else pos.ltp
-            tick_time = now_ist
-        else:
-            drift = random.uniform(-0.35, 0.44) * pos.risk_per_share
-            next_ltp = round(pos.ltp + (drift if pos.side == "LONG" else -drift), 2)
-            tick_time = now_ist.replace(hour=11, minute=15, second=0, microsecond=0)
-        manager.on_tick(sym, next_ltp, now_ist=tick_time)
+    ENGINE_STATE["last_feed_source"] = "Yahoo NSE Live"
 
-    # 2. Round-robin batch of 5 stocks per cycle (smooth CPU & fast API responses)
+    # 1. Update open positions with REAL live NSE LTP only
+    for sym in list(manager.open_positions.keys()):
+        df_live = fetch_yahoo_nse_5m(sym)
+        if df_live is None or df_live.empty:
+            continue
+        next_ltp = round(float(df_live.iloc[-1]["close"]), 2)
+        manager.on_tick(sym, next_ltp, now_ist=now_ist)
+
+    # 2. Scan 50-stock Nifty universe in 5-stock batches (strict 09:20-14:30 IST window)
+    hhmm = now_ist.strftime("%H:%M")
     if manager.halted or len(manager.open_positions) >= cfg.max_open_trades:
+        return
+    if hhmm < cfg.entry_start_ist or hhmm > cfg.entry_cutoff_ist:
         return
 
     start = ENGINE_STATE["rr_index"] % len(SCAN_SYMBOLS)
@@ -135,37 +131,36 @@ def run_autonomous_cycle() -> None:
     ENGINE_STATE["rr_index"] = (start + 5) % len(SCAN_SYMBOLS)
 
     found_signals: List[dict] = []
-    use_time = now_ist if in_hours else now_ist.replace(hour=10, minute=20, second=0, microsecond=0)
-
     for sym in batch:
         df_5m = fetch_yahoo_nse_5m(sym)
-        if df_5m is not None:
-            ENGINE_STATE["last_feed_source"] = "Yahoo NSE Live" if in_hours else "Yahoo NSE + 24x7 Sim"
-            df_15m = resample_timeframe(df_5m, 3)
-            df_1h = resample_timeframe(df_5m, 12)
-            ltp = float(df_5m.iloc[-1]["close"])
-        else:
-            ENGINE_STATE["last_feed_source"] = "24x7 Paper Replay"
-            trend = random.choice(["LONG", "SHORT"])
-            df_5m = generate_synthetic_ohlcv(1500.0, bars=80, trend=trend, seed=random.randint(1, 9999))
-            df_15m = resample_timeframe(df_5m, 3)
-            df_1h = resample_timeframe(df_5m, 6)
-            ltp = float(df_5m.iloc[-1]["close"])
+        if df_5m is None:
+            continue
+        df_15m = resample_timeframe(df_5m, 3)
+        df_1h = resample_timeframe(df_5m, 12)
+        ltp = round(float(df_5m.iloc[-1]["close"]), 2)
+        if ltp < 100.0 or ltp > 2500.0:
+            continue  # Ensure >=10 shares on Rs 10,000 capital
+
+        # Estimate real bar buying/selling pressure from candle body + volume
+        last_bar = df_5m.iloc[-1]
+        bar_range = max(0.015, float(last_bar["high"]) - float(last_bar["low"]))
+        buy_ratio = max(0.25, min(0.75, (float(last_bar["close"]) - float(last_bar["low"])) / bar_range))
+        vol = max(1000.0, float(last_bar["volume"]))
 
         snap = MarketSnapshot(
             symbol=sym,
             ltp=ltp,
-            bid=ltp - 0.05,
-            ask=ltp + 0.05,
-            bid_qty=6300.0,
-            ask_qty=3700.0,
+            bid=round(ltp - 0.05, 2),
+            ask=round(ltp + 0.05, 2),
+            bid_qty=vol * buy_ratio,
+            ask_qty=vol * (1.0 - buy_ratio),
             turnover_cr=1450.0,
         )
         sig = evaluate_signal(snap, df_5m, df_15m, df_1h, cfg)
-        if sig is not None:
+        if sig is not None and sig.score >= 90:
             found_signals.append(asdict(sig))
             if len(manager.open_positions) < cfg.max_open_trades:
-                manager.open_trade(sig, now_ist=use_time)
+                manager.open_trade(sig, now_ist=now_ist)
 
     if found_signals:
         ENGINE_STATE["last_signals"] = found_signals[:8]
@@ -341,7 +336,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="card">
         <div class="k-label">Open Floating PNL</div>
         <div class="k-val mono" id="kFloating">₹0</div>
-        <div class="k-sub mono" id="kActive">Active: 0/3 · Limit ±0.10%</div>
+        <div class="k-sub mono" id="kActive">Active: 0/2 · Limit ±0.10%</div>
       </div>
       <div class="card">
         <div class="k-label">Win Rate &amp; Profit Factor</div>
@@ -370,7 +365,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="card">
         <div class="k-label">Total Brokerage Deducted</div>
         <div class="k-val amber mono" id="vCosts">₹0</div>
-        <div class="k-sub">STT 0.025% + Brk + GST</div>
+        <div class="k-sub">STT 0.030% + Brk + GST</div>
       </div>
     </section>
 
@@ -395,7 +390,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="controls">
       <button class="btn btn-blue" onclick="triggerScanNow()">Scan &amp; Auto-Trade Now</button>
-      <button class="btn btn-green" id="btn247" onclick="toggle247()">24×7 Sim: ON</button>
+      <span class="btn" id="mktPill" style="cursor:default;">NSE: CHECKING</span>
       <button class="btn btn-red" onclick="triggerKill()">Kill Switch</button>
     </div>
 
@@ -437,7 +432,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const fEl = document.getElementById('kFloating');
         fEl.textContent = fmtINR(d.floating_pnl);
         fEl.className = 'k-val mono ' + (d.floating_pnl >= 0 ? 'green' : 'red');
-        document.getElementById('kActive').textContent = 'Active: ' + d.open_positions.length + '/3 · Limit ±0.10%';
+        document.getElementById('kActive').textContent = 'Active: ' + d.open_positions.length + '/2 · Limit ±0.10%';
 
         document.getElementById('kWr').textContent = d.win_rate.toFixed(1) + '%';
         document.getElementById('kPf').textContent = d.wins + 'W / ' + d.losses + 'L · PF: ' + d.profit_factor.toFixed(2) + ' · DD: -' + d.max_dd_pct.toFixed(1) + '%';
@@ -453,12 +448,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('vCosts').textContent = '-₹' + Math.round(d.total_costs).toLocaleString('en-IN');
 
         document.getElementById('gDaily').textContent = d.daily_trades_count + ' / ' + d.max_daily_trades;
-        document.getElementById('gLoss').textContent = fmtINR(d.realized_net_pnl) + ' / -₹' + Math.round(d.capital * 0.025).toLocaleString('en-IN');
-        document.getElementById('gRisk').textContent = (d.profit_lock_active ? '0.5%' : '1.0%') + ' (~' + fmtINR(d.capital * (d.profit_lock_active ? 0.005 : 0.01), false) + ')';
+        document.getElementById('gLoss').textContent = fmtINR(d.realized_net_pnl) + ' / -₹' + Math.round(d.capital * 0.030).toLocaleString('en-IN');
+        document.getElementById('gRisk').textContent = (d.profit_lock_active ? '0.75%' : '1.5%') + ' (~' + fmtINR(d.capital * (d.profit_lock_active ? 0.005 : 0.015), false) + ')';
         document.getElementById('gFeed').textContent = d.halted ? 'HALTED' : 'ACTIVE / CLEAR';
 
-        is247 = d.paper_24x7;
-        document.getElementById('btn247').textContent = '24×7 Sim: ' + (is247 ? 'ON' : 'OFF');
+        const isOpen = d.feed_source.indexOf('CLOSED') === -1;
+        const mp = document.getElementById('mktPill');
+        mp.textContent = isOpen ? 'NSE LIVE (09:15-15:30)' : 'NSE CLOSED (Opens 09:15 IST)';
+        mp.style.color = isOpen ? '#34D399' : '#FCD34D';
 
         const sigCount = d.last_signals.length;
         document.getElementById('deskText').textContent =
