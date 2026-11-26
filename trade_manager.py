@@ -276,10 +276,11 @@ class TradeManager:
             pos.stage = 3
             pos.active_sl = round(pos.entry_price + sign * (0.90 * pos.risk_per_share), 2)
 
-        # 5. TP2 (+2.30R) -> Book 30% + Trail SL to +1.45R
+        # 5. TP2 (+2.30R) -> Book 30% (if capital >= 25k) or trail runner only (if < 25k to save brokerage)
         if pos.stage < 4 and r_mult >= self.cfg.r_tp2:
             pos.stage = 4
-            self._partial_book(pos, 0.30, ltp, "TP2")
+            if self.cfg.capital >= 25000.0:
+                self._partial_book(pos, 0.30, ltp, "TP2")
             pos.active_sl = round(pos.entry_price + sign * (1.45 * pos.risk_per_share), 2)
 
         # 6. +2.90R -> Ratchet SL to +2.20R
