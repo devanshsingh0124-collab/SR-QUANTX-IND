@@ -196,7 +196,11 @@ class TickPayload(BaseModel):
 
 
 class TogglePayload(BaseModel):
-    paper_24x7: bool
+    paper_24x7: bool = False
+
+
+class CapitalPayload(BaseModel):
+    amount: float = 5000.0
 
 
 class KillPayload(BaseModel):
@@ -402,8 +406,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sec-title">Active NSE MIS Positions</div>
     <div id="openTrades"></div>
 
-    <div class="sec-title">Recent Closed Trades &amp; Alerts</div>
-    <div id="alertsFeed"></div>
+    <!-- SR QuantX 4-Tab History & Vault Section -->
+    <div style="display:flex; gap:8px; overflow-x:auto; border-bottom:1px solid #1E293B; padding-bottom:8px; margin-top:18px; margin-bottom:12px;">
+      <button class="btn" id="btSig" onclick="setHistTab('sig')" style="white-space:nowrap;">⚡ Event Signal Log</button>
+      <button class="btn btn-blue" id="btExec" onclick="setHistTab('exec')" style="white-space:nowrap;">📜 All Execution Log</button>
+      <button class="btn" id="btEq" onclick="setHistTab('eq')" style="white-space:nowrap;">📈 Equity Curve</button>
+      <button class="btn" id="btVault" onclick="setHistTab('vault')" style="white-space:nowrap;">🏦 Vault History</button>
+    </div>
+    <div id="histPanel"></div>
+
+    <!-- SR QuantX Action Buttons -->
+    <div style="display:flex; flex-direction:column; gap:8px; margin-top:14px;">
+      <button class="btn" id="btnPauseEngine" onclick="toggleEngine()" style="width:100%; padding:11px; font-size:13px;">⏯ Pause / Resume Engine</button>
+      <button class="btn" onclick="addCapital()" style="width:100%; padding:11px; font-size:13px;">➕ Add ₹5,000 Capital</button>
+    </div>
   </main>
 
   <script>
@@ -492,25 +508,126 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>`;
         }).join('') : '<div class="item-card" style="font-size:12px; color:#94A3B8;">Multi-Engine scanner active... next consensus setup within 25s.</div>';
 
-        const af = document.getElementById('alertsFeed');
-        const combined = [
-          ...d.closed_trades.slice(0, 5).map(c => ({
-            tag: 'CLOSED', time: c.symbol + ' ' + c.side,
-            text: c.reason + ' · Net ' + fmtINR(c.net_pnl) + ' (Costs ₹' + Math.round(c.total_costs) + ')'
-          })),
-          ...d.alerts.slice(0, 6)
-        ];
-        af.innerHTML = combined.length ? combined.map(a => `
+        window._lastData = d;
+        document.getElementById('btnPauseEngine').textContent = d.engine_running ? '⏸ Pause Engine (Running)' : '▶ Resume Engine (Paused)';
+        renderHistTab();
+      } catch (e) {}
+    }
+
+    let histTab = 'exec';
+    function setHistTab(t) {
+      histTab = t;
+      ['sig', 'exec', 'eq', 'vault'].forEach(k => {
+        const id = k === 'sig' ? 'btSig' : k === 'exec' ? 'btExec' : k === 'eq' ? 'btEq' : 'btVault';
+        const el = document.getElementById(id);
+        el.className = (k === t) ? 'btn btn-blue' : 'btn';
+      });
+      renderHistTab();
+    }
+
+    function renderHistTab() {
+      const d = window._lastData;
+      if (!d) return;
+      const hp = document.getElementById('histPanel');
+
+      if (histTab === 'sig') {
+        const alerts = d.alerts || [];
+        hp.innerHTML = alerts.length ? alerts.map(a => `
           <div class="item-card" style="padding:10px 12px;">
             <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:3px;">
               <strong class="cyan mono">[${a.tag}]</strong>
               <span class="mono" style="color:#64748B;">${a.time}</span>
             </div>
             <div style="font-size:12px; color:#E2E8F0;">${a.text}</div>
-          </div>`).join('') : '<div class="item-card" style="font-size:12px; color:#94A3B8;">Waiting for ensemble consensus...</div>';
-      } catch (e) {}
+          </div>`).join('') : '<div class="item-card" style="font-size:12px; color:#94A3B8;">No signals logged yet.</div>';
+      } else if (histTab === 'exec') {
+        const closed = d.closed_trades || [];
+        if (!closed.length) {
+          hp.innerHTML = '<div class="item-card" style="font-size:12px; color:#94A3B8;">Abhi koi closed execution nahi hai.</div>';
+          return;
+        }
+        hp.innerHTML = `
+          <div class="card" style="padding:0; overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:11.5px; text-align:left;">
+              <thead>
+                <tr style="border-bottom:1px solid #1E293B; color:#94A3B8;">
+                  <th style="padding:10px 12px;">Asset</th>
+                  <th style="padding:10px 8px;">Side</th>
+                  <th style="padding:10px 8px;">Reason</th>
+                  <th style="padding:10px 8px;">Entry→Exit</th>
+                  <th style="padding:10px 12px; text-align:right;">Net P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody class="mono">
+                ${closed.map(c => `
+                  <tr style="border-bottom:1px solid rgba(30,41,59,0.6);">
+                    <td style="padding:10px 12px; font-weight:700; color:#FFF;">${c.symbol}</td>
+                    <td style="padding:10px 8px;"><span class="pill ${c.side === 'LONG' ? 'long' : 'short'}" style="margin:0;">${c.side}</span></td>
+                    <td style="padding:10px 8px; color:#CBD5E1; font-family:Inter,sans-serif;">${c.reason}</td>
+                    <td style="padding:10px 8px; color:#94A3B8;">₹${c.entry_price}→₹${c.exit_price}</td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:700;" class="${c.net_pnl >= 0 ? 'green' : 'red'}">${fmtINR(c.net_pnl)}<div style="font-size:10px; color:#64748B;">Fee ₹${Math.round(c.total_costs)}</div></td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>`;
+      } else if (histTab === 'eq') {
+        const closed = (d.closed_trades || []).slice().reverse();
+        let eq = d.capital;
+        const pts = [eq];
+        closed.forEach(c => { eq += c.net_pnl; pts.push(eq); });
+        const minV = Math.min(...pts) - 50;
+        const maxV = Math.max(...pts) + 50;
+        const span = Math.max(1, maxV - minV);
+        const coords = pts.map((v, i) => {
+          const x = pts.length === 1 ? 300 : 20 + (i / (pts.length - 1)) * 560;
+          const y = 150 - ((v - minV) / span) * 120;
+          return x.toFixed(1) + ',' + y.toFixed(1);
+        }).join(' ');
+        const color = eq >= d.capital ? '#10B981' : '#F43F5E';
+        hp.innerHTML = `
+          <div class="card">
+            <div class="k-label" style="margin-bottom:8px;">Live Equity Curve (${pts.length - 1} Closed Trades)</div>
+            <svg viewBox="0 0 600 170" style="width:100%; height:auto; display:block;">
+              <line x1="20" y1="90" x2="580" y2="90" stroke="#1E293B" stroke-dasharray="4 4"/>
+              <polyline fill="none" stroke="${color}" stroke-width="3" points="${coords}"/>
+              <text x="20" y="164" fill="#94A3B8" font-size="11" font-family="monospace">Start ₹${Math.round(d.capital).toLocaleString('en-IN')}</text>
+              <text x="580" y="164" fill="${color}" font-size="11" font-family="monospace" text-anchor="end">Now ₹${Math.round(eq).toLocaleString('en-IN')}</text>
+            </svg>
+          </div>`;
+      } else {
+        const rows = d.vault_daily || [];
+        if (!rows.length) {
+          hp.innerHTML = '<div class="item-card" style="font-size:12px; color:#94A3B8;">Vault history abhi khali hai — pehla trade close hone par daily compounding aur 70%/30% split yahan dikhega.</div>';
+          return;
+        }
+        hp.innerHTML = rows.map(r => `
+          <div class="item-card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong class="mono">${r.date}</strong>
+              <span class="mono ${r.net >= 0 ? 'green' : 'red'}" style="font-weight:700;">Net ${fmtINR(r.net)}</span>
+            </div>
+            <div class="mono" style="font-size:11px; color:#94A3B8; margin-top:6px;">
+              ${r.trades} Trades (${r.wins}W) · Gross ${fmtINR(r.gross)} · Fees -₹${Math.round(r.costs)}
+            </div>
+            <div class="mono" style="font-size:11px; color:#7DD3FC; margin-top:4px;">
+              70% Withdraw: ₹${Math.round(r.withdraw_70)} · 30% Compounded: ₹${Math.round(r.compound_30)}
+            </div>
+          </div>`).join('');
+      }
     }
 
+    async function toggleEngine() {
+      await fetch('/toggle-engine', { method: 'POST' });
+      await refresh();
+    }
+    async function addCapital() {
+      await fetch('/add-capital', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: 5000 })
+      });
+      await refresh();
+    }
     async function triggerScanNow() {
       await fetch('/scan/auto', { method: 'POST' });
       await refresh();
@@ -559,6 +676,61 @@ def health() -> dict:
 @app.get("/status")
 def status() -> dict:
     return manager.status_dict()
+
+
+def _build_vault_daily(closed_list) -> list:
+    by_day = {}
+    for c in closed_list:
+        day = (c.closed_at_iso or "")[:10] or "Today"
+        if day not in by_day:
+            by_day[day] = {"date": day, "trades": 0, "wins": 0, "gross": 0.0, "costs": 0.0, "net": 0.0}
+        d = by_day[day]
+        d["trades"] += 1
+        if c.net_pnl > 0:
+            d["wins"] += 1
+        d["gross"] += c.gross_pnl
+        d["costs"] += c.total_costs
+        d["net"] += c.net_pnl
+    out = []
+    for day in sorted(by_day.keys(), reverse=True):
+        d = by_day[day]
+        d["withdraw_70"] = round(max(0.0, d["net"]) * 0.70, 2)
+        d["compound_30"] = round(max(0.0, d["net"]) * 0.30, 2)
+        d["gross"] = round(d["gross"], 2)
+        d["costs"] = round(d["costs"], 2)
+        d["net"] = round(d["net"], 2)
+        out.append(d)
+    return out
+
+
+@app.post("/toggle-engine")
+def toggle_engine() -> dict:
+    ENGINE_STATE["running"] = not ENGINE_STATE["running"]
+    return {"running": ENGINE_STATE["running"]}
+
+
+@app.post("/add-capital")
+def add_capital(payload: CapitalPayload) -> dict:
+    from config import QuantXConfig
+    new_cap = round(manager.cfg.capital + payload.amount, 2)
+    manager.cfg = QuantXConfig(
+        broker=manager.cfg.broker,
+        capital=new_cap,
+        db_path=manager.cfg.db_path,
+        risk_pct=manager.cfg.risk_pct,
+        a_plus_risk_pct=manager.cfg.a_plus_risk_pct,
+        max_daily_loss_pct=manager.cfg.max_daily_loss_pct,
+        max_open_trades=manager.cfg.max_open_trades,
+        max_daily_trades=manager.cfg.max_daily_trades,
+        safe_bp_ratio=manager.cfg.safe_bp_ratio,
+        r_tp1=manager.cfg.r_tp1,
+        telegram_bot_token=manager.cfg.telegram_bot_token,
+        telegram_chat_id=manager.cfg.telegram_chat_id,
+    )
+    global cfg
+    cfg = manager.cfg
+    notifier.send("CAPITAL", f"Capital updated to ₹{new_cap:,.0f} (+₹{payload.amount:,.0f})")
+    return {"capital": new_cap}
 
 
 @app.get("/sr-status")
@@ -611,6 +783,8 @@ def sr_status() -> dict:
         "withdrawable_70": withdrawable,
         "compounded_cap": compounded_cap,
         "lot_scale": lot_scale,
+        "engine_running": ENGINE_STATE["running"],
+        "vault_daily": _build_vault_daily(closed),
     })
     return base
 
